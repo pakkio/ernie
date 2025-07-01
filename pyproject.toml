@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "ernie-test"
+version = "0.1.0"
+description = ""
+authors = ["pakkio <claudio.pacchiega@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+gradio-client = "^1.10.4"
+gradio = "^5.35.0"
+openai = "^1.93.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
