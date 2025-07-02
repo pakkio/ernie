@@ -5,66 +5,57 @@ import threading
 
 def streaming_ernie_chat(client, message, system_message="", max_tokens=10240):
     """
-    Generator function that simulates streaming by breaking the response into chunks
+    Generator function that provides real streaming from Ernie API
     """
     try:
-        
-        # Get the full response first
-        result = client.predict(
-            message=message,
-            param_2=system_message,
-            param_3=max_tokens,
+        # Submit job for real streaming
+        job = client.submit(
+            message,
+            system_message,
+            max_tokens,
             api_name="/chat"
         )
         
-        if result and len(result) > 0:
-            response_text = str(result[0]) if isinstance(result, (list, tuple)) else str(result)
-            
-            # Basic filtering to remove obvious thinking patterns while preserving markdown
-            reasoning_patterns = [
-                "**Thinking**:",
-                "I need to come up with",
-                "Let me think about"
-            ]
-            
-            # Remove thinking patterns but preserve markdown structure
-            clean_response = response_text
-            for pattern in reasoning_patterns:
-                if pattern in clean_response:
-                    # Find the end of the thinking section (usually ends with a paragraph break)
-                    start_idx = clean_response.find(pattern)
-                    if start_idx != -1:
-                        # Look for double newline or end of thinking section
-                        end_patterns = ['\n\n', '\n\n---', '\n\n#']
-                        end_idx = len(clean_response)
-                        for end_pattern in end_patterns:
-                            temp_idx = clean_response.find(end_pattern, start_idx)
-                            if temp_idx != -1:
-                                end_idx = temp_idx
-                                break
-                        clean_response = clean_response[:start_idx] + clean_response[end_idx:]
-            
-            clean_response = clean_response.strip()
-            
-            if clean_response:
-                # Stream the response preserving markdown formatting
-                # Split by words but keep newlines and formatting
-                import re
-                tokens = re.findall(r'\S+|\n', clean_response)
-                current_response = ""
+        # Stream the response in real-time
+        for partial_response in job:
+            global cancel_requested
+            if cancel_requested:
+                cancel_requested = False
+                yield "Request cancelled by user."
+                return
                 
-                for token in tokens:
-                    if token == '\n':
-                        current_response += '\n'
-                    else:
-                        current_response += token + " "
-                    yield current_response.rstrip()
-                    time.sleep(0.05)  # Faster streaming for better UX
-            else:
-                yield "No response received from the API."
-        else:
-            yield "No response received from the API."
-            
+            if partial_response and len(partial_response) > 0:
+                response_text = str(partial_response[0]) if isinstance(partial_response, (list, tuple)) else str(partial_response)
+                
+                # Basic filtering to remove obvious thinking patterns while preserving markdown
+                reasoning_patterns = [
+                    "**Thinking**:",
+                    "I need to come up with",
+                    "Let me think about"
+                ]
+                
+                # Remove thinking patterns but preserve markdown structure
+                clean_response = response_text
+                for pattern in reasoning_patterns:
+                    if pattern in clean_response:
+                        # Find the end of the thinking section (usually ends with a paragraph break)
+                        start_idx = clean_response.find(pattern)
+                        if start_idx != -1:
+                            # Look for double newline or end of thinking section
+                            end_patterns = ['\n\n', '\n\n---', '\n\n#']
+                            end_idx = len(clean_response)
+                            for end_pattern in end_patterns:
+                                temp_idx = clean_response.find(end_pattern, start_idx)
+                                if temp_idx != -1:
+                                    end_idx = temp_idx
+                                    break
+                            clean_response = clean_response[:start_idx] + clean_response[end_idx:]
+                
+                clean_response = clean_response.strip()
+                
+                if clean_response:
+                    yield clean_response
+                    
     except Exception as e:
         yield f"Error calling API: {e}"
 
@@ -79,7 +70,24 @@ except Exception as e:
 # Global conversation history
 conversation_history = []
 
-def chat_with_ernie(message, history):
+# Global variable to track cancellation
+cancel_requested = False
+
+# Language options
+LANGUAGES = {
+    "Italian": "Italian",
+    "English": "English", 
+    "Spanish": "Spanish",
+    "French": "French",
+    "German": "German",
+    "Portuguese": "Portuguese",
+    "Russian": "Russian",
+    "Chinese": "Chinese",
+    "Japanese": "Japanese",
+    "Korean": "Korean"
+}
+
+def chat_with_ernie(message, history, language="Italian"):
     """
     Chat function for Gradio interface with streaming support
     """
@@ -102,8 +110,9 @@ def chat_with_ernie(message, history):
         else:
             context += f"Assistant: {msg['content']}\n"
     
-    # Add current context to the message
-    full_message = f"Previous conversation:\n{context}\nCurrent question: {message}"
+    # Add current context and language instruction to the message
+    language_instruction = f"Answer in {language}."
+    full_message = f"{language_instruction}\n\nPrevious conversation:\n{context}\nCurrent question: {message}"
     
     # Get streaming response
     full_response = ""
@@ -123,6 +132,14 @@ def clear_history():
     conversation_history.clear()
     return []
 
+def cancel_request():
+    """
+    Set the cancel flag to stop ongoing requests
+    """
+    global cancel_requested
+    cancel_requested = True
+    return "Request cancellation sent..."
+
 def create_gradio_interface():
     """
     Create and configure the Gradio interface
@@ -130,6 +147,14 @@ def create_gradio_interface():
     with gr.Blocks(title="Ernie Chat") as demo:
         gr.Markdown("# Ernie Chat Interface")
         gr.Markdown("Chat with Baidu's Ernie 4.5 Turbo model")
+        
+        with gr.Row():
+            language_dropdown = gr.Dropdown(
+                choices=list(LANGUAGES.keys()),
+                value="Italian",
+                label="Response Language",
+                scale=1
+            )
         
         chatbot = gr.Chatbot(
             height=500,
@@ -141,20 +166,21 @@ def create_gradio_interface():
             msg = gr.Textbox(
                 placeholder="Type your message here...",
                 container=False,
-                scale=4
+                scale=3
             )
             submit = gr.Button("Send", variant="primary", scale=1)
+            cancel = gr.Button("Cancel", variant="stop", scale=1)
             clear = gr.Button("Clear", variant="secondary", scale=1)
         
-        def respond(message, chat_history):
+        def respond(message, chat_history, language):
             if not message.strip():
                 return "", chat_history
             
             # Add user message to chat history
             chat_history.append([message, ""])
             
-            # Stream the response
-            for response in chat_with_ernie(message, chat_history):
+            # Stream the response with selected language
+            for response in chat_with_ernie(message, chat_history, language):
                 chat_history[-1][1] = response
                 yield "", chat_history
         
@@ -163,8 +189,9 @@ def create_gradio_interface():
             return []
         
         # Event handlers
-        msg.submit(respond, [msg, chatbot], [msg, chatbot])
-        submit.click(respond, [msg, chatbot], [msg, chatbot])
+        msg.submit(respond, [msg, chatbot, language_dropdown], [msg, chatbot])
+        submit.click(respond, [msg, chatbot, language_dropdown], [msg, chatbot])
+        cancel.click(cancel_request, outputs=[])
         clear.click(clear_chat, outputs=[chatbot])
     
     return demo
